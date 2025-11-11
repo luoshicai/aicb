@@ -1,3 +1,4 @@
+# 导入与依赖
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,6 +21,8 @@ except ImportError as e:
 import math
 import re
 
+# 数据结构定义
+# Work_Item 数据类
 @dataclasses.dataclass
 class Work_Item:
     name: str = dataclasses.field(default="none")
@@ -36,7 +39,7 @@ class Work_Item:
     process_time: int = dataclasses.field(default=100)
 
 
-
+# 作用：从性能缓存中查找某一层（stage）的前向计算耗时（单位可能是微秒）。
 def _get_aiob_compute_time(compute_cache, forward_or_backward, stage, dowarn=True, aiob_enable=True):
     default_compute_time = 1
     if not aiob_enable:
@@ -57,11 +60,13 @@ def _get_aiob_compute_time(compute_cache, forward_or_backward, stage, dowarn=Tru
         print(f"[warn] can't match any stage with {stage}, using default_compute_time {default_compute_time}")
     return default_compute_time
 
+# 简单封装每层的 ID 和名称，便于遍历模型结构。
 class LayerInfo:
     def __init__(self, layer_id, layer_name):
         self.layer_id = layer_id
         self.layer_name = layer_name
 
+# 这是整个脚本的核心类，负责生成 workload
 class SimAIWorkload():
     def __init__(self, model, args, compue_cache=None):
         self.model = model
@@ -77,6 +82,7 @@ class SimAIWorkload():
             #如果有moe_router_topk则用，否则用num_experts_per_tok
             self.topk = args.moe_router_topk if hasattr(args,"moe_router_topk") else args.num_experts_per_tok
 
+    # 递归遍历模型的所有子模块，收集所有关键层的信息（Attention、MLP、MoE 路由/专家等）。
     def get_model_details(self):
         layers = []
         visited = set()
@@ -103,10 +109,15 @@ class SimAIWorkload():
         traverse_model(model)
 
         return layers
-    
+
+    # 核心逻辑
+    # 根据模型层（layers）信息，生成一个按层顺序的 self.workload 列表（每个元素是 Work_Item），
+    # 每个 Work_Item 描述该层的前向计算耗时、前向/后向/数据并行时的通信类型与通信量等信息。这个 workload 会被上层调度器用于模拟调度与性能评估。 
     def workload_generate_aiob(self):
         default_compute_time = 1
         compute_time = 0
+
+        # 计算 TP 通信量（AllReduce）
         tp_comm_size = 2 * self.mbs * self.seq_len * self.args.hidden_size
         layers = self.get_model_details()
         print("layer length:" , len(layers))
@@ -115,8 +126,11 @@ class SimAIWorkload():
             name = layer.layer_name
             forward_comm = "NONE"
             forward_comm_size = tp_comm_size
+            #  EP（Expert Parallel）通信量
             ep_dispatch_size = tp_comm_size * self.topk // self.tp
             ep_combine_size = tp_comm_size * self.topk // self.tp
+
+            # DeepSeek 特殊优化：FP8 量化因子
             if self.args.frame == "DeepSeek" or self.args.frame == "Qwen3-Moe":
                 # for DeepEP based on https://github.com/parthpower/DeepEP/commit/50aee15f592bc22142eb04b7d718296b19613ae9
                 ep_dispatch_size = int(ep_dispatch_size * MockedDeepSeek.FP8_FACTOR)
@@ -126,6 +140,7 @@ class SimAIWorkload():
             else:
                 forward_comm = "ALLREDUCE"
 
+            # 归一化层 / 共享专家层（仅计算）
             if "norm" in name or "shared_expert" in name: # comp only layers
                 compute_time = _get_aiob_compute_time(
                         self.compute_cache, "forward", name
@@ -144,6 +159,7 @@ class SimAIWorkload():
                         dp_comm_size=0,
                     )
                 )
+            # Attention / Dense MLP 层（计算 + TP AllReduce）
             elif "attention" in name or "dense_mlp" in name: # comp & ALLREDUCE comm layers
                 compute_time = _get_aiob_compute_time(
                         self.compute_cache, "forward", name
@@ -162,6 +178,7 @@ class SimAIWorkload():
                         dp_comm_size=0,
                     )
                 )
+            # MoE 路由层（moe_route）
             elif "moe_route" in name: # moe route
                 compute_time = _get_aiob_compute_time(
                         self.compute_cache, "forward", name
@@ -181,7 +198,7 @@ class SimAIWorkload():
                         dp_comm_size=0
                     )
                 )
-
+            #  MoE 专家层（moe_expert）
             elif "moe_expert" in name: # moe experrt
                 compute_time = _get_aiob_compute_time(
                         self.compute_cache, "forward", name
@@ -218,6 +235,7 @@ class SimAIWorkload():
                         dp_comm_size=0
                     )
                 )
+    # dump_file() 方法：输出 workload 文件
     def dump_file(self, filename):
         filename = filename + ".txt"
 
@@ -244,7 +262,7 @@ class SimAIWorkload():
                 )
                 
                 
-
+# 主程序逻辑（if __name__ == "__main__":）
 if __name__ == "__main__":
     import sys
     
@@ -260,6 +278,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 2:
         config_file = sys.argv[2]
     
+    # 加载模型配置和实例化
     if "Qwen3-Moe" in model_name:
         args = MockedQwen3.Qwen3MoeParams(config_file)
         model = MockedQwen3.Qwen3MoeModel(args)
@@ -272,12 +291,15 @@ if __name__ == "__main__":
     # args = MockedDeepSeek.DeepSeekParams(config_file)
     # model = MockedDeepSeek.DeepSeekModel(args)
 
+    # 创建结果目录
     result_dir = args.result_dir
     if not os.path.isdir(result_dir):
         os.makedirs(result_dir)
     filename = f"{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-bs{args.micro_batch}-seq{args.seq_length}"
     
+    # 获取 compute_cache（计算耗时）
     if args.aiob_enable:
+        # 调用 Aiob 模型运行一次，获取性能数据
         if "Qwen3-Moe" in model_name:
             import workload_generator.mocked_model.inference.AiobQwen3 as AiobQwen3
             aiob_model = AiobQwen3.Qwen3MoeModel(args)
@@ -291,6 +313,7 @@ if __name__ == "__main__":
             sys.exit(1)
 
     else:
+        # 读取已有的 aiob 输出文件作为缓存
         aiob_dir = "results/aiob_outputs"
         aiob_output_filename = f"{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-bpg{args.micro_batch}-seq{args.seq_length}.txt"
         aiob_output_filepath = os.path.join(aiob_dir,aiob_output_filename)
@@ -305,6 +328,7 @@ if __name__ == "__main__":
         print(f"    '{key}' : {value},")
     print("}")
     
+    # 生成 workload 并保存
     work = SimAIWorkload(
         model, args,compute_cache
     )

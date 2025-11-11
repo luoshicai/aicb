@@ -354,6 +354,21 @@ class Qwen3MoeModel(torch.nn.Module):
         # self.MLP = Qwen3MoeMLP(self.args) # TODO add MLP only
         self.MoE = Qwen3MoeSparseMoeBlock(self.args)
     
+    # 核心结构
+    # Layer i:
+  #     ├── Attention
+  #     │     ├── Norm
+  #     │     ├── QKV Proj (FP8 GEMM)
+  #     │     ├── Rotary Embedding
+  #     │     ├── FlashAttention
+  #     │     ├── O Proj (FP8 GEMM)
+  #     │     └── Post Norm
+  #     └── MoE Block
+  #           ├── Route Gate (Linear)
+  #           ├── Select Experts (TopK Softmax)
+  #           ├── Expert Up Projection (FP8 GEMM)
+  #           ├── Expert Activation (Silu+Mul)
+  #           └── Expert Down Projection (FP8 GEMM)
     def forward(self):
         for i in range(self.args.num_hidden_layers):
             pre_norm, atten_qkv, atten_rotary_emb, atten_core, atten_o, post_norm = self.Attention()

@@ -284,8 +284,10 @@ def get_comp_out(args):
         return filepath
 
     
-
+# 从 AIOB 生成的输出文件里按 区段（section） 汇总各类算子的平均 GPU 时间 (time_gpu_avg)，
+# 并把 Attention/MLP/MoE 等几类算子的平均时间累加后返回为 compute_cache 字典，供上层仿真使用。
 def extract_inference_averages(file_path,args):
+    # 初始化累加器，用浮点数累加不同类别的 time_gpu_avg 值。
     attention_norm_avg_sum = 0.0
     attention_avg_sum = 0.0
     mlp_avg_sum = 0.0
@@ -293,6 +295,9 @@ def extract_inference_averages(file_path,args):
     moe_route_avg_sum = 0.0
     moe_expert_sum = 0.0
 
+    # 定义两个正则：
+    # section_header_re：匹配行首形如 SomeSectionName: 的区段头（只接受字母数字下划线，不含破折号或空格）。
+    # time_gpu_avg_re：匹配形如 time_gpu_avg: 12.345 的字段，并捕获数值（整数或小数）。
     section_header_re = re.compile(r"^(\w+):")
     time_gpu_avg_re = re.compile(r"time_gpu_avg:\s+(\d+(\.\d+)?)")
     # time_gpu_min_re = re.compile(r"time_gpu_min:\s+(\d+(\.\d+)?)")
@@ -301,6 +306,8 @@ def extract_inference_averages(file_path,args):
         with open(file_path, "r") as file:
             current_section = None
 
+            # 逐行读取并用 section_header_re.match（只在行首匹配）判定是否遇到新的区段头
+            # 若是则把 current_section 设为该区段名（例如 "atten_norm"、"moe_route" 等）
             for line in file:
                 header_match = section_header_re.match(line)
                 if header_match:
