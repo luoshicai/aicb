@@ -1,0 +1,46 @@
+{
+    "atten_norm": {
+        "variance": 1.8611249434133086e-05,
+        "P99": 1.5482599999999997
+    },
+    "atten_qkv": {
+        "variance": 0.0,
+        "P99": 0.0
+    },
+    "atten_rotary_emb": {
+        "variance": 0.0023220037347215974,
+        "P99": 12.15556
+    },
+    "atten_flash": {
+        "variance": 0.6973155673381641,
+        "P99": 356.27599
+    },
+    "atten_o": {
+        "variance": 0.0012592065414214577,
+        "P99": 6.4454
+    },
+    "moe_norm": {
+        "variance": 1.0999094612946994e-05,
+        "P99": 1.54407
+    },
+    "moe_route_gate": {
+        "variance": 0.007174642824807627,
+        "P99": 12.206840000000001
+    },
+    "moe_route_select_experts": {
+        "variance": 0.023259471367133744,
+        "P99": 188.66107999999997
+    },
+    "moe_expert_up": {
+        "variance": 0.0,
+        "P99": 0.0
+    },
+    "moe_expert_act": {
+        "variance": 0.002196930851063827,
+        "P99": 15.69671
+    },
+    "moe_expert_down": {
+        "variance": 0.0,
+        "P99": 0.0
+    }
+}

@@ -5,7 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import workload_generator.mocked_model.inference.MockedDeepSeek as MockedDeepSeek
 import workload_generator.mocked_model.MockedModel
-import workload_generator.mocked_model.inference.MockedQwen3 as MockedQwen3
+import workload_generator.mocked_model.HBF_models.HBF_MockedQwen3 as MockedQwen3
 from utils.utils import CommType, get_params, get_comp_out, extract_inference_averages
 import os
 from typing import List, Tuple
@@ -302,7 +302,7 @@ if __name__ == "__main__":
     if args.aiob_enable:
         # 调用 Aiob 模型运行一次，获取性能数据
         if "Qwen3-Moe" in model_name:
-            import workload_generator.mocked_model.inference.AiobQwen3 as AiobQwen3
+            import workload_generator.mocked_model.HBF_models.HBF_AiobQwen3 as AiobQwen3
             aiob_model = AiobQwen3.Qwen3MoeModel(args)
             aiob_output_filepath = aiob_model()
         elif "DeepSeek" in model_name:

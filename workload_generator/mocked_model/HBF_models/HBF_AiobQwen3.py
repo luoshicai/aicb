@@ -114,6 +114,7 @@ class Qwen3MoeAttention(torch.nn.Module):
             deep_gemm.gemm_fp8_fp8_bf16_nt(x_fp8, y_fp8, out)
         t = bench_kineto(test_func, 'fp8_gemm', suppress_kineto_output=True)
         return t
+        
     def _qk_norm(self, q_or_k):
         m = self.args.micro_batch
         head_dim = self.args.head_dim
@@ -239,11 +240,14 @@ class Qwen3MoeAttention(torch.nn.Module):
         pre_attention_layernorm = self._norm()
 
         # qkv
-        qkv_quant = self._attn_quant(True)
-        qkv_proj = self._attn_proj(True)
+        # qkv_quant = self._attn_quant(True)
+        # print("qkv_quant =", qkv_quant)
+
+        # qkv_proj = self._attn_proj(True)
         q_norm = self._qk_norm(True)
         k_norm = self._qk_norm(False)
-        attn_qkv = qkv_quant + qkv_proj + q_norm + k_norm
+        # attn_qkv = qkv_quant + qkv_proj + q_norm + k_norm
+        attn_qkv = 0
 
         # rotary_embedding
         rotary_emb = self._rotary_emb()
@@ -253,7 +257,8 @@ class Qwen3MoeAttention(torch.nn.Module):
 
         # 输出投影（Output Projection）
         o_quant = self._attn_quant(False)
-        o_proj = self._attn_proj(False)
+        # o_proj = self._attn_proj(False)
+        o_proj = 0
         attn_o = o_quant + o_proj
 
         # norm
@@ -271,7 +276,7 @@ class Qwen3MoeSparseMoeBlock(torch.nn.Module):
         self.ep = args.expert_model_parallel_size
         self.tp = args.tensor_model_parallel_size
         self.topk = args.num_experts_per_tok
-    
+
     def _route_gate(self):
         # ReplicatedLinear
         x = torch.randn(self.batch_size, self.hidden_size, device='cuda', dtype=torch.bfloat16)
@@ -350,7 +355,7 @@ class Qwen3MoeSparseMoeBlock(torch.nn.Module):
         intermediate_cache2 = torch.randn((num_groups * m_max, n // 2),
                                         device='cuda',
                                         dtype=torch.bfloat16)
-        
+
         def test_func():
             torch.ops._C.silu_and_mul(
                 intermediate_cache2.unflatten(0, (num_groups, m_max)),
@@ -366,11 +371,15 @@ class Qwen3MoeSparseMoeBlock(torch.nn.Module):
         # 根据 router-gate 的结果选择 top-k 专家。
         route_select_experts = self._select_experts()
         # 执行 MoE FFN 的第一部分（上升线性层，up-projection）。
-        moe_up = self._moe_gate_proj(True)
+        # moe_up = self._moe_gate_proj(True)
+        moe_up = 0
+
         # 激活函数（一般是 GELU / SiLU / SwiGLU 中的 gating）。
         moe_act = self._moe_act()
+
         # 执行 MoE FFN 的第二部分（下降线性层，down-projection）。
-        moe_down = self._moe_gate_proj(False)
+        # moe_down = self._moe_gate_proj(False)
+        moe_down = 0
 
         return route_gate, route_select_experts, moe_up, moe_act, moe_down
 
@@ -384,7 +393,7 @@ class Qwen3MoeModel(torch.nn.Module):
         self.Attention = Qwen3MoeAttention(self.args)
         # self.MLP = Qwen3MoeMLP(self.args) # TODO add MLP only
         self.MoE = Qwen3MoeSparseMoeBlock(self.args)
-    
+
     # 核心结构
     # Layer i:
   #     ├── Attention
@@ -448,7 +457,6 @@ class Qwen3MoeModel(torch.nn.Module):
         filepath = write_time(self.time_list, self.args)
         process_all_keys(filepath)
         return filepath
-    
 
 if __name__ == "__main__":
     args = MockedQwen3.Qwen3Params()
