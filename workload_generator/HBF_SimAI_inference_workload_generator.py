@@ -302,7 +302,7 @@ if __name__ == "__main__":
     if args.aiob_enable:
         # 调用 Aiob 模型运行一次，获取性能数据
         if "Qwen3-Moe" in model_name:
-            import workload_generator.mocked_model.HBF_models.HBF_AiobQwen3 as AiobQwen3
+            import workload_generator.mocked_model.HBF_models.Qwen3moe_235B as AiobQwen3
             aiob_model = AiobQwen3.Qwen3MoeModel(args)
             aiob_output_filepath = aiob_model()
         elif "DeepSeek" in model_name:

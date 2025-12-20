@@ -12,7 +12,7 @@ einops
 vllm
 
 # Dependencies installed from Git repositories
-git+https://github.com/fanshiqing/grouped_gemm@v1.0
-git+https://github.com/deepseek-ai/DeepGEMM@391755ada0ffefa9a6a52b6f14dcaf22d1a463e0
-git+https://github.com/deepseek-ai/FlashMLA.git@b31bfe72a83ea205467b3271a5845440a03ed7cb
+# git+https://github.com/fanshiqing/grouped_gemm@v1.0
+# git+https://github.com/deepseek-ai/DeepGEMM@391755ada0ffefa9a6a52b6f14dcaf22d1a463e0
+# git+https://github.com/deepseek-ai/FlashMLA.git@b31bfe72a83ea205467b3271a5845440a03ed7cb
 git+https://github.com/flashinfer-ai/flashinfer.git@9c264c0b5ad76593d7d343f4a5711a4fa6fdc909
