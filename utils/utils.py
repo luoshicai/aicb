@@ -287,6 +287,7 @@ def get_comp_out(args):
 # 从 AIOB 生成的输出文件里按 区段（section） 汇总各类算子的平均 GPU 时间 (time_gpu_avg)，
 # 并把 Attention/MLP/MoE 等几类算子的平均时间累加后返回为 compute_cache 字典，供上层仿真使用。
 def extract_inference_averages(file_path,args):
+    print("1111")
     # 初始化累加器，用浮点数累加不同类别的 time_gpu_avg 值。
     attention_norm_avg_sum = 0.0
     attention_avg_sum = 0.0

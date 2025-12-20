@@ -1,0 +1,11 @@
+inference_term:decode
+atten_norm:
+    time_gpu_avg: 43.0592
+atten:
+    time_gpu_avg: 372.6029
+moe_norm:
+    time_gpu_avg: 30.6995
+moe_route:
+    time_gpu_avg: 49.8278
+moe_experts:
+    time_gpu_avg: 2019.4611

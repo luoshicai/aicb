@@ -75,6 +75,7 @@ class SimAIWorkload():
         self.workload = []
         self.seq_len = args.seq_length
         self.tp = args.tensor_model_parallel_size
+        self.ep = args.expert_model_parallel_size
         self.mbs = args.micro_batch
         if args.moe_enable:
             self.expert_model_parallel_size = args.expert_model_parallel_size
@@ -126,6 +127,7 @@ class SimAIWorkload():
             name = layer.layer_name
             forward_comm = "NONE"
             forward_comm_size = tp_comm_size
+
             #  EP（Expert Parallel）通信量
             ep_dispatch_size = tp_comm_size * self.topk // self.tp
             ep_combine_size = tp_comm_size * self.topk // self.tp
@@ -180,16 +182,21 @@ class SimAIWorkload():
                 )
             # MoE 路由层（moe_route）
             elif "moe_route" in name: # moe route
+                # 计算开销
                 compute_time = _get_aiob_compute_time(
                         self.compute_cache, "forward", name
                         )
+                # 通信开销 ep=1 和 ep>1分开
+                forward_comm = "ALLTOALL_EP" if self.ep > 1 else "NONE"
+                comm_size = ep_dispatch_size if self.ep > 1 else 0
+
                 self.workload.append(
                     Work_Item(
                         name="moe_route",
                         forward_compute_time=compute_time,
-                        forward_comm="ALLTOALL_EP",
+                        forward_comm=forward_comm,
                         # forward_comm_size = "2*" + str(token_num) + "*" + str(self.args.moe_router_topk) + "*" + str(self.args.expert_dim),
-                        forward_comm_size = ep_dispatch_size,
+                        forward_comm_size = comm_size,
                         backward_compute_time=default_compute_time,
                         backward_comm="NONE",
                         backward_comm_size=0,
@@ -198,21 +205,27 @@ class SimAIWorkload():
                         dp_comm_size=0
                     )
                 )
+
             #  MoE 专家层（moe_expert）
             elif "moe_expert" in name: # moe experrt
+                # 计算开销
                 compute_time = _get_aiob_compute_time(
                         self.compute_cache, "forward", name
                         )
 
                 if self.args.frame == "DeepSeek":
+                    # 通信开销 ep=1 和 ep>1分开
+                    forward_comm = "ALLTOALL_EP" if self.ep > 1 else "NONE"
+                    comm_size = ep_dispatch_size if self.ep > 1 else 0
+                    
                     #TODO currently AiobDeepSeek doesn't support moe_route, should be fixed.
                     self.workload.append(
                         Work_Item(
                             name="moe_route",
                             forward_compute_time=default_compute_time,
-                            forward_comm="ALLTOALL_EP",
+                            forward_comm=forward_comm,
                             # forward_comm_size = "2*" + str(token_num) + "*" + str(self.args.moe_router_topk) + "*" + str(self.args.expert_dim),
-                            forward_comm_size = ep_dispatch_size,
+                            forward_comm_size = comm_size,
                             backward_compute_time=default_compute_time,
                             backward_comm="NONE",
                             backward_comm_size=0,
@@ -221,12 +234,17 @@ class SimAIWorkload():
                             dp_comm_size=0
                         )
                     )
+
+
+                # 通信开销 ep=1 和 ep>1分开
+                forward_comm = "ALLTOALL_EP" if self.ep > 1 else "NONE"
+                comm_size = ep_combine_size if self.ep > 1 else 0                
                 self.workload.append(
                     Work_Item(
                         name="moe_expert",
                         forward_compute_time=compute_time,
-                        forward_comm="ALLTOALL_EP",
-                        forward_comm_size = ep_combine_size,
+                        forward_comm=forward_comm,
+                        forward_comm_size = comm_size,
                         backward_compute_time=default_compute_time,
                         backward_comm="NONE",
                         backward_comm_size=0,
@@ -266,18 +284,16 @@ class SimAIWorkload():
 # 主程序逻辑（if __name__ == "__main__":）
 if __name__ == "__main__":
     import sys
+    import os
 
-    # args = get_params()
-    # print(args)
-    # Check if a config file is provided as a command line argument
-    config_file = None
-    if len(sys.argv) > 1:
-        model_name = sys.argv[1]
-    else:
-        print("Usage: python workload_generator.py <model_name> [config_file]")
+    # 解析命令行参数
+    if len(sys.argv) < 2:
+        print("Usage: python workload_generator.py <model_name> [config_file] [aiob_output_filepath]")
         sys.exit(1)
-    if len(sys.argv) > 2:
-        config_file = sys.argv[2]
+
+    model_name = sys.argv[1]
+    config_file = sys.argv[2] if len(sys.argv) > 2 else None
+    aiob_output_filepath_override = sys.argv[3] if len(sys.argv) > 3 else None  # ← 新增：第3个参数
 
     # 加载模型配置和实例化
     if "Qwen3-Moe" in model_name:
@@ -289,8 +305,6 @@ if __name__ == "__main__":
     else:
         print(f"Invalid model name: {model_name}")
         sys.exit(1)
-    # args = MockedDeepSeek.DeepSeekParams(config_file)
-    # model = MockedDeepSeek.DeepSeekModel(args)
 
     # 创建结果目录
     result_dir = args.result_dir
@@ -298,6 +312,7 @@ if __name__ == "__main__":
         os.makedirs(result_dir)
     filename = f"{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-bs{args.micro_batch}-seq{args.seq_length}"
 
+    # ================================
     # 获取 compute_cache（计算耗时）
     if args.aiob_enable:
         # 调用 Aiob 模型运行一次，获取性能数据
@@ -312,28 +327,51 @@ if __name__ == "__main__":
         else:
             print(f"Invalid model name: {model_name}")
             sys.exit(1)
+    # ================================
+    aiob_output_filepath = ""
 
-    else:
-        # 读取已有的 aiob 输出文件作为缓存
-        # 这里的逻辑是如果不启用aiob，则会读取已有的output.txt文件，如果也没有这个output.txt文件，则会全0输出
-        aiob_dir = "results/aiob_outputs"
-        aiob_output_filename = f"{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-bpg{args.micro_batch}-seq{args.seq_length}.txt"
-        aiob_output_filepath = os.path.join(aiob_dir,aiob_output_filename)
+    # 优先级：如果用户显式提供了 aiob_output_filepath_override，则直接使用它
+    if aiob_output_filepath_override is not None:
+        aiob_output_filepath = aiob_output_filepath_override
+        print(f"Using provided AIOB output file: {aiob_output_filepath}")
         if not os.path.exists(aiob_output_filepath):
-            print(f"aiob not enabled, and {aiob_output_filepath} not found. Using default compute time.")
-            aiob_output_filepath = ""
+            print(f"Error: Provided AIOB file does not exist: {aiob_output_filepath}")
+            sys.exit(1)
+    else:
+        # 否则走原有逻辑：根据 aiob_enable 决定是否运行 AIOB 或读取默认路径
+        if args.aiob_enable:
+            # 调用 Aiob 模型运行一次，获取性能数据
+            if "Qwen3-Moe" in model_name:
+                import workload_generator.mocked_model.HBF_models.HBF_AiobQwen3 as AiobQwen3
+                aiob_model = AiobQwen3.Qwen3MoeModel(args)
+                aiob_output_filepath = aiob_model()
+            elif "DeepSeek" in model_name:
+                import workload_generator.mocked_model.inference.AiobDeepSeek as AiobDeepSeek
+                aiob_model = AiobDeepSeek.DeepSeekModel(args)
+                aiob_output_filepath = aiob_model()
+            else:
+                print(f"Invalid model name: {model_name}")
+                sys.exit(1)
         else:
-            print(f"aiob not enabled, using existing file {aiob_output_filepath}.")
-    compute_cache = extract_inference_averages(aiob_output_filepath,args)
+            # 读取已有的 aiob 输出文件作为缓存
+            aiob_dir = "results/aiob_outputs"
+            aiob_output_filename = f"{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-bpg{args.micro_batch}-seq{args.seq_length}.txt"
+            aiob_output_filepath = os.path.join(aiob_dir, aiob_output_filename)
+            if not os.path.exists(aiob_output_filepath):
+                print(f"aiob not enabled, and {aiob_output_filepath} not found. Using default compute time.")
+                aiob_output_filepath = ""  # extract_inference_averages 应能处理空路径
+            else:
+                print(f"aiob not enabled, using existing file {aiob_output_filepath}.")
+
+    # 提取 compute_cache
+    compute_cache = extract_inference_averages(aiob_output_filepath, args)
     print("compute_cache = {")
     for key, value in compute_cache.items():
         print(f"    '{key}' : {value},")
     print("}")
 
     # 生成 workload 并保存
-    work = SimAIWorkload(
-        model, args,compute_cache
-    )
+    work = SimAIWorkload(model, args, compute_cache)
     name_layers = work.workload_generate_aiob()
     # set comm_size = 0 for any comm_type == NONE
     for i in range(len(work.workload)):
