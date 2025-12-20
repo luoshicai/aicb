@@ -312,22 +312,6 @@ if __name__ == "__main__":
         os.makedirs(result_dir)
     filename = f"{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-bs{args.micro_batch}-seq{args.seq_length}"
 
-    # ================================
-    # 获取 compute_cache（计算耗时）
-    if args.aiob_enable:
-        # 调用 Aiob 模型运行一次，获取性能数据
-        if "Qwen3-Moe" in model_name:
-            import workload_generator.mocked_model.HBF_models.Qwen3moe_235B as AiobQwen3
-            aiob_model = AiobQwen3.Qwen3MoeModel(args)
-            aiob_output_filepath = aiob_model()
-        elif "DeepSeek" in model_name:
-            import workload_generator.mocked_model.inference.AiobDeepSeek as AiobDeepSeek
-            aiob_model = AiobDeepSeek.DeepSeekModel(args)
-            aiob_output_filepath = aiob_model()
-        else:
-            print(f"Invalid model name: {model_name}")
-            sys.exit(1)
-    # ================================
     aiob_output_filepath = ""
 
     # 优先级：如果用户显式提供了 aiob_output_filepath_override，则直接使用它
