@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Run a candidate-validation loop for one HBF/SimAI workload.
+"""Search stage-level strategies for one fixed per-replica HBF/SimAI workload.
 
 This script bridges:
 - search outputs or feasible candidate sets
@@ -8,13 +8,14 @@ This script bridges:
 - SimAI analytical execution
 - result aggregation into a summary table
 
-It is the validation layer, not the primary search or memory-model layer.
+Stage time excludes request queueing, so it is not a TTFT or TPOT estimate.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import re
 import shutil
@@ -38,6 +39,16 @@ DEFAULT_CONFIG = (
     / "qwen3moe_235B_A22B_tp1_ep32_bs32_seq256.json"
 )
 DEFAULT_OUTPUT_ROOT = SIMAI_ROOT / "results" / "outputs" / "HBF_topk_validation"
+
+
+def input_fingerprint(paths: Sequence[Path], settings: Dict) -> str:
+    digest = hashlib.sha256(json.dumps(settings, sort_keys=True).encode("utf-8"))
+    for path in sorted(paths):
+        digest.update(str(path.name).encode("utf-8"))
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    return digest.hexdigest()
 
 
 def shape_from_config(config: Dict) -> str:
@@ -284,6 +295,11 @@ def run_simai_analytical(
     workload_dir: Path,
     output_dir: Path,
     log_file: Path,
+    num_gpus: int,
+    gpus_per_node: int,
+    nvlink_bandwidth: float,
+    nic_bandwidth: float,
+    nodes_per_switch: int,
 ) -> None:
     command = [
         sys.executable,
@@ -292,6 +308,11 @@ def run_simai_analytical(
         str(workload_dir),
         "--output_dir",
         str(output_dir),
+        "--num-gpus", str(num_gpus),
+        "--gpus-per-node", str(gpus_per_node),
+        "--nvlink-bandwidth", str(nvlink_bandwidth),
+        "--nic-bandwidth", str(nic_bandwidth),
+        "--nodes-per-switch", str(nodes_per_switch),
     ]
     run_command(command, cwd=SIMAI_ROOT, log_file=log_file)
 
@@ -410,6 +431,30 @@ def rank_candidate_summary(
     return ranked
 
 
+def select_by_objective(
+    latency_rows: Sequence[Dict], *, objective: str,
+    max_stage_time: Optional[float],
+) -> List[Dict]:
+    """Select independently for each hardware latency configuration."""
+    selected: List[Dict] = []
+    for latency in sorted({row["latency_tag"] for row in latency_rows}):
+        eligible = [dict(row) for row in latency_rows
+                    if row["latency_tag"] == latency and
+                    (max_stage_time is None or row["total_time"] <= max_stage_time)]
+        if objective == "max_throughput":
+            eligible.sort(key=lambda row: (-row["cluster_tokens_per_time_unit"],
+                                           row["total_time"], row["parallel_tag"]))
+        else:
+            eligible.sort(key=lambda row: (row["total_time"],
+                                           -row["cluster_tokens_per_time_unit"],
+                                           row["parallel_tag"]))
+        for rank, row in enumerate(eligible, 1):
+            row["selection_rank"] = rank
+            row["objective"] = objective
+            selected.append(row)
+    return selected
+
+
 def render_topn_report(
     summaries: Sequence[Dict],
     *,
@@ -463,7 +508,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gpus-per-node", type=int, default=8)
     parser.add_argument("--gpu-memory-gib", type=float, default=40.0)
     parser.add_argument("--memory-utilization-ratio", type=float, default=0.9)
-    parser.add_argument("--topk", type=int, default=10)
+    parser.add_argument("--topk", type=int, default=0,
+                        help="Coarse candidate cap; 0 (default) evaluates every capacity-feasible strategy.")
     parser.add_argument(
         "--all-feasible",
         action="store_true",
@@ -472,6 +518,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-tp")
     parser.add_argument("--candidate-ep")
     parser.add_argument("--candidate-pp")
+    parser.add_argument("--objective", choices=("max_throughput", "min_latency"),
+                        default="max_throughput",
+                        help="Stage-level objective; micro_batch is fixed per DP replica.")
+    parser.add_argument("--max-stage-time", type=float,
+                        help="Maximum SimAI stage time, in simulator time units, per latency scenario.")
+    parser.add_argument("--nvlink-bandwidth", type=float, default=360)
+    parser.add_argument("--nic-bandwidth", type=float, default=48.5)
+    parser.add_argument("--nodes-per-switch", type=int, default=8)
     parser.add_argument("--latency-table")
     parser.add_argument("--latency-budget-ms", type=float)
     parser.add_argument("--max-coarse-latency-penalty", type=float)
@@ -521,6 +575,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.topk < 0 or args.selection_topn < 1:
+        parser.error("topk must be nonnegative and selection-topn must be positive")
+    if args.max_stage_time is not None and args.max_stage_time <= 0:
+        parser.error("max-stage-time must be positive")
 
     base_config_path = Path(args.config_file).resolve()
     base_config = load_and_prepare_config(base_config_path)
@@ -556,6 +614,31 @@ def main() -> int:
         staged_dir=staged_aiob_root,
         latency_values=latency_values,
     )
+    fingerprint = input_fingerprint(
+        [base_config_path, Path(__file__).resolve(),
+         SCRIPT_DIR / "batch_generate_workload.py",
+         SCRIPT_DIR / "search_parallel_strategy.py", SCRIPT_DIR / "memory_model.py",
+         SCRIPT_DIR / "estimate_prefill_memory.py",
+         SCRIPT_DIR / "workload_generator" / "HBF_SimAI_inference_workload_generator.py",
+         SIMAI_ROOT / "run_simai_batch.py", SIMAI_ROOT / "bin" / "SimAI_analytical",
+         *effective_aiob_input_dir.glob("*.txt")],
+        {"num_nodes": args.num_nodes, "gpus_per_node": args.gpus_per_node,
+         "gpu_memory_gib": args.gpu_memory_gib,
+         "memory_utilization_ratio": args.memory_utilization_ratio,
+         "candidate_tp": args.candidate_tp, "candidate_ep": args.candidate_ep,
+         "candidate_pp": args.candidate_pp,
+         "nvlink_bandwidth": args.nvlink_bandwidth,
+         "nic_bandwidth": args.nic_bandwidth,
+         "nodes_per_switch": args.nodes_per_switch,
+         "latency_values": latency_values},
+    )
+    manifest_path = summary_dir / "run_manifest.json"
+    if args.skip_existing and simai_root.exists():
+        if not manifest_path.exists():
+            raise ValueError("--skip-existing requires a matching run manifest")
+        previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if previous.get("input_fingerprint") != fingerprint:
+            raise ValueError("--skip-existing inputs changed; use a new output root")
 
     search_output_json = search_dir / "search_results.json"
     search_payload = run_search(
@@ -574,7 +657,7 @@ def main() -> int:
         log_file=log_dir / "search.log",
     )
 
-    if args.all_feasible:
+    if args.all_feasible or args.topk == 0:
         topk_candidates = pick_all_feasible_candidates(search_payload)
     else:
         topk_candidates = pick_topk_feasible_candidates(search_payload, args.topk)
@@ -621,6 +704,11 @@ def main() -> int:
                 workload_dir=candidate_workload_dir,
                 output_dir=candidate_simai_dir,
                 log_file=log_dir / f"simai_{parallel_tag}.log",
+                num_gpus=args.num_nodes * args.gpus_per_node,
+                gpus_per_node=args.gpus_per_node,
+                nvlink_bandwidth=args.nvlink_bandwidth,
+                nic_bandwidth=args.nic_bandwidth,
+                nodes_per_switch=args.nodes_per_switch,
             )
 
         latency_rows.extend(
@@ -637,14 +725,25 @@ def main() -> int:
         throughput_stat=args.selection_throughput_stat,
         latency_stat=args.selection_latency_stat,
     )
-    selected_topn = ranked_summary[: args.selection_topn]
+    for row in latency_rows:
+        row["stage_time_feasible"] = (
+            args.max_stage_time is None or row["total_time"] <= args.max_stage_time
+        )
+    objective_rankings = select_by_objective(
+        latency_rows, objective=args.objective,
+        max_stage_time=args.max_stage_time,
+    )
+    selected_topn = [row for row in objective_rankings
+                     if row["selection_rank"] <= args.selection_topn]
     write_csv(summary_dir / "candidate_latency_rows.csv", latency_rows)
+    write_csv(summary_dir / "objective_rankings.csv", objective_rankings)
     write_csv(summary_dir / "candidate_summary.csv", ranked_summary)
     write_csv(summary_dir / "selected_top_strategies.csv", selected_topn)
     write_json(
         summary_dir / "run_manifest.json",
         {
             "config_file": str(base_config_path),
+            "input_fingerprint": fingerprint,
             "shape": shape,
             "num_nodes": args.num_nodes,
             "gpus_per_node": args.gpus_per_node,
@@ -655,6 +754,14 @@ def main() -> int:
             "output_root": str(output_root),
             "topk": args.topk,
             "all_feasible": args.all_feasible,
+            "objective": args.objective,
+            "objective_scope": "stage_execution_no_queueing",
+            "workload_semantics": "fixed_micro_batch_per_dp_replica",
+            "max_stage_time": args.max_stage_time,
+            "nvlink_bandwidth": args.nvlink_bandwidth,
+            "nic_bandwidth": args.nic_bandwidth,
+            "nodes_per_switch": args.nodes_per_switch,
+            "candidate_evaluation_exact": args.all_feasible or args.topk == 0,
             "selection_topn": args.selection_topn,
             "selection_throughput_stat": args.selection_throughput_stat,
             "selection_latency_stat": args.selection_latency_stat,
@@ -668,14 +775,10 @@ def main() -> int:
     print(f"Latency rows: {len(latency_rows)}")
     print(f"Summary file: {summary_dir / 'candidate_summary.csv'}")
     print(f"Selected top strategies: {summary_dir / 'selected_top_strategies.csv'}")
-    print(
-        render_topn_report(
-            ranked_summary,
-            throughput_stat=args.selection_throughput_stat,
-            latency_stat=args.selection_latency_stat,
-            topn=args.selection_topn,
-        )
-    )
+    for row in selected_topn:
+        print(f"latency={row['latency_tag']} rank={row['selection_rank']} "
+              f"strategy={row['parallel_tag']} stage_time={row['total_time']} "
+              f"throughput={row['cluster_tokens_per_time_unit']:.8f}")
     return 0
 
 
