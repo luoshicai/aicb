@@ -2,6 +2,14 @@
 
 实现属于 **SimAI 的 AICB 子仓库**。Riven 开发路径为 `/home/lsc/HBF/SimAI/aicb`，R760 部署路径为 `/home/lsc/HBF-LLM/SimAI/aicb`；实验输入、日志和结果放在仓库外的 `experiments` 中。
 
+上游基线与旧改动的对应关系见父仓库的 `README_HBF_PORT.md`，可用
+`python3 ../scripts/check_hbf_upstream.py --check-remote --github-ssh` 复核。
+旧 `HBF_inference_workload_with_computeCache.sh` 入口保留外部计算输入路径，
+恢复了 HBF 默认配置；缺失、非正或非有限的计算时间会报错。
+外部 AIOB 的 `time_gpu_avg` 使用 μs，经原提取器转换为 workload 的 ns。
+旧入口采用其历史负载口径；本文件下述固定全局 batch 与 PP 前向调度，
+使用 `build_strategy_body_workload.py` / `search_inference_pipeline.py`。
+
 ## 能力与边界
 
 - `inference_strategy_contract.py`：固定全局 batch，TP/EP/PP/DP 分组、microbatch、逐流水级 HBM/HBF 容量与放置。复用原 `estimate_prefill_memory.py` 的层与首尾权重分配。PP4 支持 94 层的 24/24/23/23 分配；KV 覆盖完整副本批次，工作区按 microbatch，额外预留全部 microbatch 的边界缓冲。

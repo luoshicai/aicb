@@ -14,7 +14,7 @@ Important boundary:
 # 导入与依赖
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import workload_generator.mocked_model.inference.MockedDeepSeek as MockedDeepSeek
 import workload_generator.mocked_model.MockedModel
@@ -67,11 +67,13 @@ def _get_aiob_compute_time(compute_cache, forward_or_backward, stage, dowarn=Tru
         if prefix == key:
 
             compute_time = compute_time_map.get(key)
+            if (isinstance(compute_time, bool)
+                    or not isinstance(compute_time, (int, float))
+                    or not math.isfinite(compute_time) or compute_time <= 0):
+                raise ValueError(f"Invalid compute time for stage {stage!r}: {compute_time!r}")
             return compute_time
 
-    if dowarn:
-        print(f"[warn] can't match any stage with {stage}, using default_compute_time {default_compute_time}")
-    return default_compute_time
+    raise ValueError(f"Missing compute time for stage {stage!r}; supply a complete AIOB input")
 
 # 简单封装每层的 ID 和名称，便于遍历模型结构。
 class LayerInfo:
@@ -81,9 +83,11 @@ class LayerInfo:
 
 # 这是整个脚本的核心类，负责生成 workload
 class SimAIWorkload():
-    def __init__(self, model, args, compue_cache=None):
+    def __init__(self, model, args, compute_cache=None):
         self.model = model
         self.args = args
+        if compute_cache is None:
+            raise ValueError("A compute cache is required")
         self.compute_cache = compute_cache
         self.workload = []
         self.seq_len = args.seq_length
@@ -120,7 +124,7 @@ class SimAIWorkload():
             for child in model.child_modules():
                 traverse_model(child, child_id+1)
 
-        traverse_model(model)
+        traverse_model(self.model)
 
         return layers
 
@@ -150,7 +154,7 @@ class SimAIWorkload():
             #     # for DeepEP based on https://github.com/parthpower/DeepEP/commit/50aee15f592bc22142eb04b7d718296b19613ae9
             #     ep_dispatch_size = int(ep_dispatch_size * MockedDeepSeek.FP8_FACTOR)
 
-            if args.tensor_model_parallel_size == 1 :
+            if self.args.tensor_model_parallel_size == 1 :
                 forward_comm = "NONE"
             else:
                 forward_comm = "ALLREDUCE"
@@ -355,8 +359,10 @@ if __name__ == "__main__":
             aiob_output_filename = f"{args.model_name}-world_size{args.world_size}-tp{args.tensor_model_parallel_size}-pp{args.pipeline_model_parallel}-ep{args.expert_model_parallel_size}-bpg{args.micro_batch}-seq{args.seq_length}.txt"
             aiob_output_filepath = os.path.join(aiob_dir, aiob_output_filename)
             if not os.path.exists(aiob_output_filepath):
-                print(f"aiob not enabled, and {aiob_output_filepath} not found. Using default compute time.")
-                aiob_output_filepath = ""  # extract_inference_averages 应能处理空路径
+                raise FileNotFoundError(
+                    f"AIOB input not found: {aiob_output_filepath}. "
+                    "Pass an external simulator timing file as the third argument."
+                )
             else:
                 print(f"aiob not enabled, using existing file {aiob_output_filepath}.")
 
