@@ -1,5 +1,7 @@
 # Access AICB
 
+HBF research extension: [PP-aware inference strategy search and two-pool capacity](README_HBF_PP.md).
+
 You can access the full suite of **SimAI** tools on **GitHub** via  [**SimAI@github**](https://github.com/aliyun/SimAI)
 
 You can access AICB on **GitHub** via  [**AICB@github**](https://github.com/aliyun/aicb)
